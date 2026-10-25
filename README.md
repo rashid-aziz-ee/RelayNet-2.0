@@ -130,7 +130,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 👥 Authors & Contributions
 
-* **Rashid Aziz** & Team ([@rashid-aziz-ee](https://github.com/rashid-aziz-ee)) — Systems Architecture, MANET Mesh Protocol, Cryptographic Implementation, and Android Jetpack Compose Engineering.
+* **Team BC Crew**— Systems Architecture, MANET Mesh Protocol, Cryptographic Implementation, and Android Jetpack Compose Engineering.
 
 ---
 
