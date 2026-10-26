@@ -56,14 +56,16 @@ class MainActivity : ComponentActivity() {
             // Bind ViewModel hooks to Service MeshManager
             meshService?.meshManager?.let { meshManager ->
                 viewModel.sendLambdaWithId = { text, msgId ->
-                    val recipientId = viewModel.selectedRecipientId.value
-                    val recipientName = viewModel.selectedRecipientName.value
+                    val isBroadcast = text.startsWith("🆘") || viewModel.selectedRecipientId.value.isEmpty()
+                    val recipientId = if (isBroadcast) "" else viewModel.selectedRecipientId.value
+                    val recipientName = if (isBroadcast) "" else viewModel.selectedRecipientName.value
                     meshManager.broadcastNewMessage(text, myName, recipientId, recipientName, msgId)
                 }
 
                 viewModel.sendLambda = { text ->
-                    val recipientId = viewModel.selectedRecipientId.value
-                    val recipientName = viewModel.selectedRecipientName.value
+                    val isBroadcast = text.startsWith("🆘") || viewModel.selectedRecipientId.value.isEmpty()
+                    val recipientId = if (isBroadcast) "" else viewModel.selectedRecipientId.value
+                    val recipientName = if (isBroadcast) "" else viewModel.selectedRecipientName.value
                     meshManager.broadcastNewMessage(text, myName, recipientId, recipientName)
                 }
 

@@ -73,11 +73,7 @@ class MeshNetworkManager(
     private val cryptoEngine = CryptoEngine(context)
     private val messageDao = RelayNetDatabase.getDatabase(context).messageDao()
 
-    // FIX: all Room database access must happen off the main thread. Nearby Connections
-    // callbacks (onPayloadReceived, onConnectionResult, etc.) run on the main thread, so any
-    // messageDao call made directly inside them was throwing IllegalStateException and being
-    // silently swallowed by the surrounding try/catch - this was the real cause of messages
-    // appearing to "vanish". This dedicated background scope is used for all DB + relay work.
+    // Dedicated background scope for all DB + relay operations
     private val meshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var isMeshStarted = false
@@ -110,7 +106,6 @@ class MeshNetworkManager(
         if (!isMeshStarted) {
             startMesh()
         } else {
-            // Soft-cycle discovery to clear any stale endpoint caches in Google Play Services
             meshScope.launch {
                 try {
                     connectionsClient.stopDiscovery()
@@ -186,7 +181,6 @@ class MeshNetworkManager(
             }
             .addOnFailureListener { e ->
                 android.util.Log.e("RelayNet", "Advertising failed: ${e.message}")
-                // If failed due to transient state and not already advertising, retry shortly
                 if (e.message?.contains("8001") != true) {
                     meshScope.launch {
                         kotlinx.coroutines.delay(1500)
@@ -204,7 +198,6 @@ class MeshNetworkManager(
             }
             .addOnFailureListener { e ->
                 android.util.Log.e("RelayNet", "Discovery failed: ${e.message}")
-                // If failed due to transient state and not already discovering, retry shortly
                 if (e.message?.contains("8002") != true) {
                     meshScope.launch {
                         kotlinx.coroutines.delay(1500)
@@ -226,26 +219,27 @@ class MeshNetworkManager(
         recipientName: String,
         explicitMessageId: String? = null
     ) {
-        // Encryption + payload building doesn't touch the DB directly here, but keep it off
-        // the calling thread too (this can be called from UI click handlers) to stay safe.
         meshScope.launch {
             try {
                 val messageId = explicitMessageId ?: UUID.randomUUID().toString()
                 val timestamp = System.currentTimeMillis()
-                val isBroadcast = text.startsWith("🆘")
+                val isBroadcast = text.startsWith("🆘") || recipientId.isBlank()
 
-                val payloadToSend = if (recipientId.isEmpty()) {
+                val effectiveRecipientId = if (isBroadcast) "" else recipientId.trim()
+                val effectiveRecipientName = if (isBroadcast) "" else recipientName.trim()
+
+                val payloadToSend = if (effectiveRecipientId.isEmpty()) {
                     // group/broadcast chat - no single peer to encrypt for
                     text
                 } else {
-                    cryptoEngine.encryptForPeer(text, recipientId)
+                    cryptoEngine.encryptForPeer(text, effectiveRecipientId)
                 }
 
                 seenMessageIds.add(messageId)
 
-                // Local cache is handled by ViewModel, but we also ensure over the air delivery string format:
-                // messageId|senderId|senderName|payload|timestamp|ttl|recipientId|recipientName
-                val messageRawString = "$messageId|$myDeviceId|$myName|$payloadToSend|$timestamp|3|$recipientId|$recipientName"
+                // Protect wire protocol from pipe character collision in payload
+                val safePayload = payloadToSend.replace("|", "¦")
+                val messageRawString = "$messageId|$myDeviceId|$myName|$safePayload|$timestamp|3|$effectiveRecipientId|$effectiveRecipientName"
                 sendToAllPeers(messageRawString, null)
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -253,9 +247,6 @@ class MeshNetworkManager(
         }
     }
 
-    // FIX: this whole function now runs inside meshScope (background thread) instead of
-    // directly on the Nearby callback's main thread, so every messageDao call inside it
-    // (getAllMessageIds, getMessageById, existsById, insert) is now safe to run.
     private fun handleIncomingRawData(rawData: String, cameFromEndpoint: String) {
         meshScope.launch {
             try {
@@ -440,7 +431,8 @@ class MeshNetworkManager(
                     val requestedIds = requestedIdsCsv.split(",")
                     for (id in requestedIds) {
                         val msg = messageDao.getMessageById(id) ?: continue
-                        val syncStr = "SYNC_DELIVERY|$myDeviceId|${msg.messageId}|${msg.senderId}|${msg.senderName}|${msg.payload}|${msg.originTimestamp}|${msg.ttl}|${msg.recipientId}|${msg.recipientName}"
+                        val safePayload = msg.payload.replace("|", "¦")
+                        val syncStr = "SYNC_DELIVERY|$myDeviceId|${msg.messageId}|${msg.senderId}|${msg.senderName}|$safePayload|${msg.originTimestamp}|${msg.ttl}|${msg.recipientId}|${msg.recipientName}"
                         sendToPeer(syncStr, cameFromEndpoint)
                     }
                     return@launch
@@ -459,18 +451,24 @@ class MeshNetworkManager(
 
                     val senderId = parts[3]
                     val senderName = parts[4]
-                    val payload = parts[5]
-                    val timestamp = parts[6].toLong()
-                    val ttl = parts[7].toInt()
-                    val recipientId = parts[8]
-                    val recipientName = parts[9]
+                    val payload = parts[5].replace("¦", "|")
+                    val timestamp = parts[6].toLongOrNull() ?: System.currentTimeMillis()
+                    val ttl = parts[7].toIntOrNull() ?: 1
+                    val rawRecipientId = if (parts.size > 8) parts[8].trim() else ""
+                    val rawRecipientName = if (parts.size > 9) parts[9].trim() else ""
 
-                    val decryptedPayload = cryptoEngine.decryptMessage(payload)
-                    val isDecryptedSuccessfully = !decryptedPayload.startsWith("ENC:CTR:") && payload.startsWith("ENC:CTR:")
-                    val isForMe = isDecryptedSuccessfully || recipientId == myDeviceId || (recipientId.isEmpty() && !payload.startsWith("ENC:CTR:"))
+                    val isEncrypted = payload.startsWith("ENC:CTR:")
+                    val decryptedPayload = if (isEncrypted) cryptoEngine.decryptMessage(payload) else payload
+                    val isDecryptedSuccessfully = isEncrypted && !decryptedPayload.startsWith("ENC:CTR:")
 
-                    val payloadToStore = if (isForMe) decryptedPayload else payload
-                    val effectiveRecipientId = if (isForMe && (recipientId.isEmpty() || recipientId != myDeviceId)) myDeviceId else recipientId
+                    // A message is a group broadcast if recipient is empty or starts with SOS
+                    val isGroupBroadcast = rawRecipientId.isEmpty() || rawRecipientId == "null" || decryptedPayload.startsWith("🆘")
+                    val effectiveRecipientId = if (isGroupBroadcast) "" else rawRecipientId
+                    val isE2EE = isEncrypted && !isGroupBroadcast && effectiveRecipientId.isNotEmpty()
+                    val isDirectedToMe = !isGroupBroadcast && ((effectiveRecipientId == myDeviceId) || (isDecryptedSuccessfully && effectiveRecipientId.isNotEmpty()))
+                    val isForMe = isGroupBroadcast || isDirectedToMe
+
+                    val payloadToStore = if (isDirectedToMe) decryptedPayload else payload
 
                     val message = Message(
                         messageId = msgId,
@@ -481,17 +479,18 @@ class MeshNetworkManager(
                         hopCount = maxOf(0, 3 - ttl),
                         ttl = ttl,
                         isMine = (senderId == myDeviceId),
-                        isBroadcast = decryptedPayload.startsWith("🆘") || (recipientId.isEmpty() && !payload.startsWith("ENC:CTR:")),
+                        isBroadcast = isGroupBroadcast || decryptedPayload.startsWith("🆘"),
                         deliveryStatus = if (senderId == myDeviceId) "SENT" else if (isForMe) "DELIVERED" else "RELAYED",
                         recipientId = effectiveRecipientId,
-                        recipientName = recipientName
+                        recipientName = if (isGroupBroadcast) "" else rawRecipientName
                     )
                     messageDao.insert(message)
 
                     // Relay message to other nodes
                     if (ttl > 1) {
                         val nextTtl = ttl - 1
-                        val relayedSyncStr = "SYNC_DELIVERY|$myDeviceId|$msgId|$senderId|$senderName|$payload|$timestamp|$nextTtl|$recipientId|$recipientName"
+                        val safeRelayPayload = payload.replace("|", "¦")
+                        val relayedSyncStr = "SYNC_DELIVERY|$myDeviceId|$msgId|$senderId|$senderName|$safeRelayPayload|$timestamp|$nextTtl|$effectiveRecipientId|$rawRecipientName"
                         sendToAllPeers(relayedSyncStr, cameFromEndpoint)
                     }
 
@@ -503,7 +502,9 @@ class MeshNetworkManager(
                             senderName = senderName,
                             payload = decryptedPayload,
                             timestamp = timestamp,
-                            ttl = ttl
+                            ttl = ttl,
+                            recipientId = effectiveRecipientId,
+                            isE2EE = isE2EE
                         )
                         onMessageReceivedCallback(envelope)
                     }
@@ -523,18 +524,24 @@ class MeshNetworkManager(
 
                     val senderId = parts[1]
                     val senderName = parts[2]
-                    val encryptedPayload = parts[3]
-                    val timestamp = parts[4].toLong()
-                    val ttl = parts[5].toInt()
-                    val recipientId = if (parts.size > 6) parts[6] else ""
-                    val recipientName = if (parts.size > 7) parts[7] else ""
+                    val encryptedPayload = parts[3].replace("¦", "|")
+                    val timestamp = parts[4].toLongOrNull() ?: System.currentTimeMillis()
+                    val ttl = parts[5].toIntOrNull() ?: 1
+                    val rawRecipientId = if (parts.size > 6) parts[6].trim() else ""
+                    val rawRecipientName = if (parts.size > 7) parts[7].trim() else ""
 
-                    val decryptedPayload = cryptoEngine.decryptMessage(encryptedPayload)
-                    val isDecryptedSuccessfully = !decryptedPayload.startsWith("ENC:CTR:") && encryptedPayload.startsWith("ENC:CTR:")
-                    val isForMe = isDecryptedSuccessfully || recipientId == myDeviceId || (recipientId.isEmpty() && !encryptedPayload.startsWith("ENC:CTR:"))
+                    val isEncrypted = encryptedPayload.startsWith("ENC:CTR:")
+                    val decryptedPayload = if (isEncrypted) cryptoEngine.decryptMessage(encryptedPayload) else encryptedPayload
+                    val isDecryptedSuccessfully = isEncrypted && !decryptedPayload.startsWith("ENC:CTR:")
 
-                    val payloadToStore = if (isForMe) decryptedPayload else encryptedPayload
-                    val effectiveRecipientId = if (isForMe && (recipientId.isEmpty() || recipientId != myDeviceId)) myDeviceId else recipientId
+                    // A message is a group broadcast if recipient is empty or starts with SOS
+                    val isGroupBroadcast = rawRecipientId.isEmpty() || rawRecipientId == "null" || decryptedPayload.startsWith("🆘")
+                    val effectiveRecipientId = if (isGroupBroadcast) "" else rawRecipientId
+                    val isE2EE = isEncrypted && !isGroupBroadcast && effectiveRecipientId.isNotEmpty()
+                    val isDirectedToMe = !isGroupBroadcast && ((effectiveRecipientId == myDeviceId) || (isDecryptedSuccessfully && effectiveRecipientId.isNotEmpty()))
+                    val isForMe = isGroupBroadcast || isDirectedToMe
+
+                    val payloadToStore = if (isDirectedToMe) decryptedPayload else encryptedPayload
 
                     val envelope = MessageEnvelope(
                         messageId = mId,
@@ -542,7 +549,9 @@ class MeshNetworkManager(
                         senderName = senderName,
                         payload = decryptedPayload,
                         timestamp = timestamp,
-                        ttl = ttl
+                        ttl = ttl,
+                        recipientId = effectiveRecipientId,
+                        isE2EE = isE2EE
                     )
 
                     // Store in database
@@ -555,17 +564,18 @@ class MeshNetworkManager(
                         hopCount = maxOf(0, 3 - ttl),
                         ttl = ttl,
                         isMine = (senderId == myDeviceId),
-                        isBroadcast = decryptedPayload.startsWith("🆘") || (recipientId.isEmpty() && !encryptedPayload.startsWith("ENC:CTR:")),
+                        isBroadcast = isGroupBroadcast || decryptedPayload.startsWith("🆘"),
                         deliveryStatus = if (senderId == myDeviceId) "SENT" else if (isForMe) "DELIVERED" else "RELAYED",
                         recipientId = effectiveRecipientId,
-                        recipientName = recipientName
+                        recipientName = if (isGroupBroadcast) "" else rawRecipientName
                     )
                     messageDao.insert(message)
 
                     // Forward packet to peers
                     if (ttl > 1) {
                         val nextTtl = ttl - 1
-                        val relayedRawString = "$mId|$senderId|$senderName|$encryptedPayload|$timestamp|$nextTtl|$recipientId|$recipientName"
+                        val safeRelayPayload = encryptedPayload.replace("|", "¦")
+                        val relayedRawString = "$mId|$senderId|$senderName|$safeRelayPayload|$timestamp|$nextTtl|$effectiveRecipientId|$rawRecipientName"
                         sendToAllPeers(relayedRawString, cameFromEndpoint)
                     }
 
@@ -580,12 +590,6 @@ class MeshNetworkManager(
         }
     }
 
-    // FIX (bug 3 - silent send failures / stuck dead peers): if the underlying Bluetooth/WiFi
-    // socket to a peer dies mid-session (seen in Logcat as "VirtualOutputStream ... closed"),
-    // sendPayload throws. Previously that exception was uncaught here and would crash the
-    // meshScope coroutine silently. Now we catch it, drop the dead peer from connectedPeers,
-    // and notify the UI - so the peer list stays accurate and future sends don't keep
-    // retrying a socket that's already gone.
     private fun sendToAllPeers(dataStr: String, excludeEndpoint: String?) {
         val payload = Payload.fromBytes(dataStr.toByteArray())
         val deadPeers = mutableListOf<String>()
@@ -765,10 +769,8 @@ class MeshNetworkManager(
             }
 
             // 3. Collision-free deterministic tie-breaker:
-            // When two phones discover each other simultaneously, both calling requestConnection creates
-            // an over-the-air collision that fails or stalls (status 8003/8002).
             // Node with higher deviceId initiates immediately.
-            // Node with lower deviceId waits 4.5s to accept the incoming request first.
+            // Node with lower deviceId waits 4.5s to accept incoming request first.
             if (peerDeviceId.isNotEmpty() && myDeviceId < peerDeviceId) {
                 meshScope.launch {
                     kotlinx.coroutines.delay(4500)

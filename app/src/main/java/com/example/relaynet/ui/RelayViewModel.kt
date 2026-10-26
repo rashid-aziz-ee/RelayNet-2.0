@@ -16,6 +16,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+data class PrivateMessageNotice(
+    val senderId: String,
+    val senderName: String,
+    val previewText: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 class RelayViewModel(
     private val messageDao: MessageDao,
     val myDeviceId: String,
@@ -43,6 +50,13 @@ class RelayViewModel(
     // NEW: Unread private E2EE senders indicator state (shows glowing green badge on Peer chips)
     private val _unreadPrivateSenders = MutableStateFlow<Set<String>>(emptySet())
     val unreadPrivateSenders: StateFlow<Set<String>> = _unreadPrivateSenders.asStateFlow()
+
+    private val _latestPrivateNotice = MutableStateFlow<PrivateMessageNotice?>(null)
+    val latestPrivateNotice: StateFlow<PrivateMessageNotice?> = _latestPrivateNotice.asStateFlow()
+
+    fun clearPrivateNotice() {
+        _latestPrivateNotice.value = null
+    }
 
     fun selectRecipient(peerId: String, peerName: String) {
         _selectedRecipientId.value = peerId
@@ -86,14 +100,41 @@ class RelayViewModel(
         refreshLambda?.invoke()
     }
 
-    // NEW: Walkie-Talkie Push-to-Talk voice note transmission
+    // NEW: Walkie-Talkie Push-to-Talk voice note transmission (colon delimiter)
     fun sendVoiceNote(durationSeconds: Int, base64Audio: String) {
-        val payload = "🎤 VOICE|$durationSeconds|$base64Audio"
+        val payload = "🎤 VOICE:$durationSeconds:$base64Audio"
         onSendMessage(payload)
     }
 
     override fun onMessageReceived(envelope: MessageEnvelope) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val isMine = envelope.senderId == myDeviceId
+            // A message is a broadcast/group message if recipientId is empty/blank/null OR if it starts with SOS
+            val isBroadcast = envelope.recipientId.isBlank() || envelope.recipientId == "null" || envelope.payload.startsWith("🆘")
+
+            // A message is ONLY private if it was explicitly directed to a non-empty recipient,
+            // targeted to myDeviceId, and marked as E2EE
+            val isPrivateDirectedToMe = !isMine && !isBroadcast && envelope.recipientId.isNotBlank() && envelope.recipientId == myDeviceId && envelope.isE2EE
+
+            // Trigger unread notification badge on Peer chip ONLY when a targeted private 1-on-1 message arrives
+            // and the user is NOT actively viewing the 1-on-1 chat with that sender
+            if (isPrivateDirectedToMe && envelope.senderId.isNotBlank() && _selectedRecipientId.value != envelope.senderId) {
+                _unreadPrivateSenders.update { it + envelope.senderId }
+            }
+
+            // Update peer display name if known
+            if (envelope.senderId.isNotEmpty() && envelope.senderName.isNotEmpty()) {
+                _connectedPeers.update { currentMap ->
+                    if (currentMap.containsKey(envelope.senderId) && currentMap[envelope.senderId] != envelope.senderName) {
+                        currentMap.toMutableMap().apply {
+                            put(envelope.senderId, envelope.senderName)
+                        }
+                    } else {
+                        currentMap
+                    }
+                }
+            }
+
             val existing = messageDao.getMessageById(envelope.messageId)
             if (existing != null) {
                 // If existing message was stored as ciphertext, update it with decrypted plaintext!
@@ -101,16 +142,13 @@ class RelayViewModel(
                     messageDao.insert(
                         existing.copy(
                             payload = envelope.payload,
-                            recipientId = myDeviceId,
+                            recipientId = if (isBroadcast) "" else envelope.recipientId,
                             deliveryStatus = "DELIVERED"
                         )
                     )
                 }
                 return@launch
             }
-
-            val isMine = envelope.senderId == myDeviceId
-            val isBroadcast = envelope.payload.startsWith("🆘")
 
             val hopCount = maxOf(0, 3 - envelope.ttl)
 
@@ -125,30 +163,16 @@ class RelayViewModel(
                 isMine = isMine,
                 isBroadcast = isBroadcast,
                 deliveryStatus = if (isMine) "SENT" else "DELIVERED",
-                recipientId = if (isBroadcast) "" else myDeviceId,
+                recipientId = if (isBroadcast) "" else envelope.recipientId,
                 recipientName = if (isBroadcast) "" else myName
             )
             messageDao.insert(message)
-
-            // Update peer display name if they are in the active peer set
-            if (_connectedPeers.value.containsKey(envelope.senderId)) {
-                _connectedPeers.update { currentMap ->
-                    currentMap.toMutableMap().apply {
-                        put(envelope.senderId, envelope.senderName)
-                    }
-                }
-            }
-
-            // Flag unread private message badge on peer chip if not currently viewing their chat
-            if (!isMine && !isBroadcast && envelope.senderId.isNotEmpty() && _selectedRecipientId.value != envelope.senderId) {
-                _unreadPrivateSenders.update { it + envelope.senderId }
-            }
         }
     }
 
     override fun onSendMessage(text: String) {
         val messageId = UUID.randomUUID().toString()
-        val isBroadcast = text.startsWith("🆘")
+        val isBroadcast = text.startsWith("🆘") || _selectedRecipientId.value.isBlank()
         val timestamp = System.currentTimeMillis()
         val recipientId = if (isBroadcast) "" else _selectedRecipientId.value
         val recipientName = if (isBroadcast) "" else _selectedRecipientName.value

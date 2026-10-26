@@ -95,6 +95,8 @@ fun ChatScreen(viewModel: RelayViewModel) {
             }
         }
     }
+
+
     val userPrefs = remember { context.getSharedPreferences("relaynet_user_prefs", android.content.Context.MODE_PRIVATE) }
     var currentPhone by remember { mutableStateOf(userPrefs.getString("user_phone", "") ?: "") }
     var phoneInput by remember { mutableStateOf(currentPhone) }
@@ -383,28 +385,37 @@ fun ChatScreen(viewModel: RelayViewModel) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Text(text = "🔒", fontSize = 12.sp)
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "AES-CTR E2EE CHAT WITH: ${selectedRecipientName.uppercase()}",
+                                        text = "DIRECT 1-ON-1 E2EE: ${selectedRecipientName.uppercase()}",
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                IconButton(
+                                Surface(
                                     onClick = { viewModel.clearRecipient() },
-                                    modifier = Modifier.size(20.dp)
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.padding(start = 6.dp)
                                 ) {
                                     Text(
-                                        text = "✕",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        fontWeight = FontWeight.Bold
+                                        text = "✕ BACK TO GROUP",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
                             }
@@ -674,6 +685,7 @@ fun ChatScreen(viewModel: RelayViewModel) {
                     peers = peers,
                     selectedRecipientId = selectedRecipientId,
                     unreadPrivateSenders = unreadPrivateSenders,
+                    onGroupClick = { viewModel.clearRecipient() },
                     onPeerClick = { id, name ->
                         if (selectedRecipientId == id) {
                             viewModel.clearRecipient()
@@ -975,6 +987,7 @@ fun PeersRow(
     peers: Map<String, String>,
     selectedRecipientId: String,
     unreadPrivateSenders: Set<String> = emptySet(),
+    onGroupClick: () -> Unit = {},
     onPeerClick: (String, String) -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "peerDot")
@@ -1009,6 +1022,37 @@ fun PeersRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
+            // First Chip: Public Emergency Mesh Group
+            item {
+                val isGroupSelected = selectedRecipientId.isEmpty()
+                Surface(
+                    onClick = onGroupClick,
+                    color = if (isGroupSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        width = if (isGroupSelected) 1.5.dp else 1.dp,
+                        color = if (isGroupSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(text = "📢", fontSize = 12.sp)
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "PUBLIC GROUP",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (isGroupSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Peer Chips
             items(peers.entries.toList(), key = { it.key }) { (endpointId, displayName) ->
                 val isSelected = selectedRecipientId == endpointId
                 val hasUnread = unreadPrivateSenders.contains(endpointId)
@@ -1019,10 +1063,10 @@ fun PeersRow(
 
                 Surface(
                     onClick = { onPeerClick(endpointId, resolvedName) },
-                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant,
+                    color = if (hasUnread) Color(0xFF003816) else if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(
-                        width = if (hasUnread || isSelected) 2.dp else 1.dp,
+                        width = if (hasUnread) 2.dp else if (isSelected) 1.5.dp else 1.dp,
                         color = if (hasUnread) Color(0xFF00E676) else if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                     )
                 ) {
@@ -1032,7 +1076,7 @@ fun PeersRow(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(if (hasUnread) 8.dp else 6.dp)
+                                .size(if (hasUnread) 9.dp else 6.dp)
                                 .background(
                                     color = if (hasUnread) Color(0xFF00E676) else MaterialTheme.colorScheme.primary.copy(alpha = if (isSelected) 1f else pulseAlpha),
                                     shape = CircleShape
@@ -1053,7 +1097,7 @@ fun PeersRow(
                             text = "(${endpointId.take(4)})",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 9.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                color = if (hasUnread) Color(0xFF81C784) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         )
                         if (hasUnread) {
@@ -1067,7 +1111,7 @@ fun PeersRow(
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.Black,
                                     color = Color.Black,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                                 )
                             }
                         }
@@ -1084,24 +1128,25 @@ fun PeersRow(
 @Composable
 fun MessageBubble(message: Message, myDeviceId: String, onLongPress: () -> Unit = {}) {
     val isMe = message.isMine
+    val isSosAlert = message.payload.startsWith("🆘")
 
-    val bubbleColor = if (message.isBroadcast) {
-        MaterialTheme.colorScheme.tertiaryContainer // Alert red container
+    val bubbleColor = if (isSosAlert) {
+        MaterialTheme.colorScheme.tertiaryContainer // Alert red container ONLY for SOS!
     } else if (isMe) {
         MaterialTheme.colorScheme.primaryContainer // Signal green container
     } else {
-        MaterialTheme.colorScheme.surfaceVariant // Slate grey container
+        MaterialTheme.colorScheme.surfaceVariant // Slate grey container for normal received messages
     }
 
-    val bubbleBorder = if (message.isBroadcast) {
-        BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary) // Alert red border
+    val bubbleBorder = if (isSosAlert) {
+        BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary) // Alert red border ONLY for SOS!
     } else if (isMe) {
         BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
     } else {
         BorderStroke(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f))
     }
 
-    val textColor = if (message.isBroadcast) {
+    val textColor = if (isSosAlert) {
         MaterialTheme.colorScheme.onTertiaryContainer
     } else if (isMe) {
         MaterialTheme.colorScheme.onPrimaryContainer
@@ -1154,8 +1199,8 @@ fun MessageBubble(message: Message, myDeviceId: String, onLongPress: () -> Unit 
                 )
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                // Emergency broadcast label
-                if (message.isBroadcast && message.payload.startsWith("🆘")) {
+                // Emergency broadcast label (ONLY for actual SOS messages)
+                if (isSosAlert) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(bottom = 6.dp)
@@ -1222,7 +1267,7 @@ fun MessageBubble(message: Message, myDeviceId: String, onLongPress: () -> Unit 
                 }
 
                 // Message payload (Text or Walkie-Talkie Voice Player)
-                if (message.payload.startsWith("🎤 VOICE|")) {
+                if (message.payload.startsWith("🎤 VOICE")) {
                     VoiceMessagePlayer(
                         message = message,
                         textColor = textColor
@@ -1330,7 +1375,13 @@ fun VoiceMessagePlayer(
     textColor: Color
 ) {
     val context = LocalContext.current
-    val parts = remember(message.payload) { message.payload.split("|") }
+    val parts = remember(message.payload) {
+        if (message.payload.startsWith("🎤 VOICE:")) {
+            message.payload.split(":", limit = 3)
+        } else {
+            message.payload.split("|", limit = 3)
+        }
+    }
     val durationSec = remember(parts) { parts.getOrNull(1)?.toIntOrNull() ?: 3 }
     val base64Audio = remember(parts) { if (parts.size > 2) parts[2] else "" }
 

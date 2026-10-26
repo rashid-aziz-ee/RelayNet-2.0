@@ -6,7 +6,9 @@ data class MessageEnvelope(
     val messageId: String = UUID.randomUUID().toString(),
     val senderId: String,       // Phone ka unique network ID
     val senderName: String,     // User ka naam (e.g., "Phone A")
-    val payload: String,        // Asli text message
+    val payload: String,        // Asli text / voice message
     val timestamp: Long = System.currentTimeMillis(),
-    val ttl: Int = 3            // Max 3 hops tak aage ja sakta hai
+    val ttl: Int = 3,           // Max 3 hops tak aage ja sakta hai
+    val recipientId: String = "",
+    val isE2EE: Boolean = false
 )
