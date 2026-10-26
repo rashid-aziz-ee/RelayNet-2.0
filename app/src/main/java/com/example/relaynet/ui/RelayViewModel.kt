@@ -40,14 +40,41 @@ class RelayViewModel(
     private val _selectedRecipientName = MutableStateFlow("")
     val selectedRecipientName = _selectedRecipientName.asStateFlow()
 
+    // NEW: Unread private E2EE senders indicator state (shows glowing green badge on Peer chips)
+    private val _unreadPrivateSenders = MutableStateFlow<Set<String>>(emptySet())
+    val unreadPrivateSenders: StateFlow<Set<String>> = _unreadPrivateSenders.asStateFlow()
+
     fun selectRecipient(peerId: String, peerName: String) {
         _selectedRecipientId.value = peerId
         _selectedRecipientName.value = peerName
+        // Auto-clear unread badge on tap
+        _unreadPrivateSenders.update { it - peerId }
     }
 
     fun clearRecipient() {
         _selectedRecipientId.value = ""
         _selectedRecipientName.value = ""
+    }
+
+    fun markPeerAsRead(peerId: String) {
+        _unreadPrivateSenders.update { it - peerId }
+    }
+
+    // NEW: Benchmark Telemetry Manager hook
+    var benchmarkManager: com.example.relaynet.util.BenchmarkManager? = null
+
+    fun startBenchmark(totalPackets: Int = 30, intervalMs: Long = 500L, targetPeerId: String = "") {
+        benchmarkManager?.startBenchmark(
+            com.example.relaynet.util.BenchmarkConfig(
+                totalPackets = totalPackets,
+                intervalMs = intervalMs,
+                targetPeerId = targetPeerId
+            )
+        )
+    }
+
+    fun cancelBenchmark() {
+        benchmarkManager?.cancelBenchmark()
     }
 
     // Networking person will hook into this lambda in MainActivity
@@ -57,6 +84,12 @@ class RelayViewModel(
 
     fun refreshMesh() {
         refreshLambda?.invoke()
+    }
+
+    // NEW: Walkie-Talkie Push-to-Talk voice note transmission
+    fun sendVoiceNote(durationSeconds: Int, base64Audio: String) {
+        val payload = "🎤 VOICE|$durationSeconds|$base64Audio"
+        onSendMessage(payload)
     }
 
     override fun onMessageReceived(envelope: MessageEnvelope) {
@@ -104,6 +137,11 @@ class RelayViewModel(
                         put(envelope.senderId, envelope.senderName)
                     }
                 }
+            }
+
+            // Flag unread private message badge on peer chip if not currently viewing their chat
+            if (!isMine && !isBroadcast && envelope.senderId.isNotEmpty() && _selectedRecipientId.value != envelope.senderId) {
+                _unreadPrivateSenders.update { it + envelope.senderId }
             }
         }
     }

@@ -1,5 +1,10 @@
 package com.example.relaynet.ui
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -34,9 +39,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.example.relaynet.data.Message
+import com.example.relaynet.util.AudioHelper
+import com.example.relaynet.util.BenchmarkSummary
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -47,6 +58,7 @@ fun ChatScreen(viewModel: RelayViewModel) {
     val peers by viewModel.connectedPeers.collectAsState()
     val selectedRecipientId by viewModel.selectedRecipientId.collectAsState()
     val selectedRecipientName by viewModel.selectedRecipientName.collectAsState()
+    val unreadPrivateSenders by viewModel.unreadPrivateSenders.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     val context = LocalContext.current
@@ -55,6 +67,34 @@ fun ChatScreen(viewModel: RelayViewModel) {
 
     var showPhoneDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
+    var showBenchmarkDialog by remember { mutableStateOf(false) }
+
+    // Walkie-Talkie Voice State
+    var isRecordingAudio by remember { mutableStateOf(false) }
+    var recordingDurationSec by remember { mutableIntStateOf(0) }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            val started = AudioHelper.startRecording(context)
+            if (started) {
+                isRecordingAudio = true
+                recordingDurationSec = 0
+            }
+        } else {
+            android.widget.Toast.makeText(context, "Microphone permission required for Walkie-Talkie", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isRecordingAudio) {
+        if (isRecordingAudio) {
+            while (isRecordingAudio) {
+                delay(1000)
+                recordingDurationSec++
+            }
+        }
+    }
     val userPrefs = remember { context.getSharedPreferences("relaynet_user_prefs", android.content.Context.MODE_PRIVATE) }
     var currentPhone by remember { mutableStateOf(userPrefs.getString("user_phone", "") ?: "") }
     var phoneInput by remember { mutableStateOf(currentPhone) }
@@ -186,6 +226,17 @@ fun ChatScreen(viewModel: RelayViewModel) {
                             contentDescription = "Share App Offline",
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // NEW: Automated MANET Benchmark & Telemetry Runner
+                    IconButton(
+                        onClick = { showBenchmarkDialog = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Text(
+                            text = "📊",
+                            fontSize = 16.sp
                         )
                     }
 
@@ -389,94 +440,222 @@ fun ChatScreen(viewModel: RelayViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Red SOS button for Emergency Broadcast
-                        Button(
-                            onClick = {
-                                viewModel.onSendMessage("🆘 SOS — EMERGENCY BROADCAST FROM ${viewModel.myName}!")
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.tertiary,
-                                contentColor = MaterialTheme.colorScheme.onTertiary
-                            ),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            elevation = ButtonDefaults.buttonElevation(
-                                defaultElevation = 4.dp,
-                                pressedElevation = 1.dp
-                            ),
-                            modifier = Modifier
-                                .height(56.dp)
-                                .padding(end = 8.dp)
-                                .testTag("sos_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = "Emergency SOS",
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "SOS",
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 14.sp
+                        // Red SOS button for Emergency Broadcast (compact sleek style)
+                        if (!isRecordingAudio) {
+                            Button(
+                                onClick = {
+                                    viewModel.onSendMessage("🆘 SOS — EMERGENCY BROADCAST FROM ${viewModel.myName}!")
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.tertiary,
+                                    contentColor = MaterialTheme.colorScheme.onTertiary
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                elevation = ButtonDefaults.buttonElevation(
+                                    defaultElevation = 3.dp,
+                                    pressedElevation = 1.dp
+                                ),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .padding(end = 6.dp)
+                                    .testTag("sos_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Emergency SOS",
+                                    modifier = Modifier.size(16.dp)
                                 )
-                            )
-                        }
-
-                        TextField(
-                            value = inputText,
-                            onValueChange = { inputText = it },
-                            placeholder = {
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "Type an offline message...",
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                    text = "SOS",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 12.sp
                                     )
                                 )
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 56.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                disabledIndicatorColor = Color.Transparent,
-                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-                            ),
-                            maxLines = 4,
-                            textStyle = MaterialTheme.typography.bodyMedium
-                        )
+                            }
+                        }
 
-                        Spacer(modifier = Modifier.width(8.dp))
+                        if (isRecordingAudio) {
+                            // Active Walkie-Talkie Recording Bar
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.8f)),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 10.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // Pulsing Red Recording Indicator
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .background(MaterialTheme.colorScheme.error, CircleShape)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "REC ${AudioHelper.formatDuration(recordingDurationSec)}",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.error,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontSize = 11.sp
+                                            )
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Walkie-Talkie...",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 10.sp
+                                            ),
+                                            maxLines = 1
+                                        )
+                                    }
 
-                        val isInputEmpty = inputText.trim().isEmpty()
-
-                        IconButton(
-                            onClick = {
-                                if (!isInputEmpty) {
-                                    viewModel.onSendMessage(inputText.trim())
-                                    inputText = ""
+                                    // Cancel Recording Button
+                                    IconButton(
+                                        onClick = {
+                                            AudioHelper.cancelRecording()
+                                            isRecordingAudio = false
+                                            recordingDurationSec = 0
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Text(
+                                            text = "✕",
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 14.sp
+                                        )
+                                    }
                                 }
-                            },
-                            enabled = !isInputEmpty,
-                            modifier = Modifier
-                                .size(56.dp)
-                                .background(
-                                    color = if (!isInputEmpty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                    shape = RoundedCornerShape(16.dp)
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            // Transmit Voice Note Button
+                            IconButton(
+                                onClick = {
+                                    val result = AudioHelper.stopRecording()
+                                    isRecordingAudio = false
+                                    recordingDurationSec = 0
+                                    if (result != null) {
+                                        viewModel.sendVoiceNote(result.durationSeconds, result.base64Data)
+                                    } else {
+                                        android.widget.Toast.makeText(context, "Recording too short", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Send,
+                                    contentDescription = "Transmit Voice Note",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(20.dp)
                                 )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Send,
-                                contentDescription = "Send",
-                                tint = if (!isInputEmpty) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                modifier = Modifier.size(24.dp)
+                            }
+                        } else {
+                            TextField(
+                                value = inputText,
+                                onValueChange = { inputText = it },
+                                placeholder = {
+                                    Text(
+                                        text = if (selectedRecipientId.isNotEmpty()) "Private msg..." else "Message or 🎙️...",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                            fontSize = 13.sp
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    disabledIndicatorColor = Color.Transparent,
+                                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                singleLine = true,
+                                maxLines = 1,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp)
                             )
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            val isInputEmpty = inputText.trim().isEmpty()
+
+                            if (isInputEmpty) {
+                                // Walkie-Talkie Push-to-Talk Mic Button
+                                IconButton(
+                                    onClick = {
+                                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                            val started = AudioHelper.startRecording(context)
+                                            if (started) {
+                                                isRecordingAudio = true
+                                                recordingDurationSec = 0
+                                            }
+                                        } else {
+                                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .background(
+                                            color = MaterialTheme.colorScheme.primaryContainer,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                ) {
+                                    Text(
+                                        text = "🎙️",
+                                        fontSize = 18.sp
+                                    )
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = {
+                                        if (!isInputEmpty) {
+                                            viewModel.onSendMessage(inputText.trim())
+                                            inputText = ""
+                                        }
+                                    },
+                                    enabled = !isInputEmpty,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .background(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Send,
+                                        contentDescription = "Send",
+                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -494,6 +673,7 @@ fun ChatScreen(viewModel: RelayViewModel) {
                 PeersRow(
                     peers = peers,
                     selectedRecipientId = selectedRecipientId,
+                    unreadPrivateSenders = unreadPrivateSenders,
                     onPeerClick = { id, name ->
                         if (selectedRecipientId == id) {
                             viewModel.clearRecipient()
@@ -780,6 +960,13 @@ fun ChatScreen(viewModel: RelayViewModel) {
                 }
             )
         }
+
+        if (showBenchmarkDialog) {
+            BenchmarkDialog(
+                viewModel = viewModel,
+                onDismiss = { showBenchmarkDialog = false }
+            )
+        }
     }
 }
 
@@ -787,6 +974,7 @@ fun ChatScreen(viewModel: RelayViewModel) {
 fun PeersRow(
     peers: Map<String, String>,
     selectedRecipientId: String,
+    unreadPrivateSenders: Set<String> = emptySet(),
     onPeerClick: (String, String) -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "peerDot")
@@ -823,6 +1011,7 @@ fun PeersRow(
         ) {
             items(peers.entries.toList(), key = { it.key }) { (endpointId, displayName) ->
                 val isSelected = selectedRecipientId == endpointId
+                val hasUnread = unreadPrivateSenders.contains(endpointId)
                 val context = LocalContext.current
                 val resolvedName = remember(displayName) {
                     com.example.relaynet.util.ContactHelper.resolveContactName(context, displayName)
@@ -833,8 +1022,8 @@ fun PeersRow(
                     color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(
-                        width = if (isSelected) 2.dp else 1.dp,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                        width = if (hasUnread || isSelected) 2.dp else 1.dp,
+                        color = if (hasUnread) Color(0xFF00E676) else if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                     )
                 ) {
                     Row(
@@ -843,9 +1032,9 @@ fun PeersRow(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(6.dp)
+                                .size(if (hasUnread) 8.dp else 6.dp)
                                 .background(
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = if (isSelected) 1f else pulseAlpha),
+                                    color = if (hasUnread) Color(0xFF00E676) else MaterialTheme.colorScheme.primary.copy(alpha = if (isSelected) 1f else pulseAlpha),
                                     shape = CircleShape
                                 )
                         )
@@ -854,7 +1043,7 @@ fun PeersRow(
                             text = resolvedName,
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = if (hasUnread) Color(0xFF00E676) else MaterialTheme.colorScheme.onSurface
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -867,6 +1056,21 @@ fun PeersRow(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         )
+                        if (hasUnread) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = Color(0xFF00E676),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = "NEW",
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color.Black,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1017,14 +1221,21 @@ fun MessageBubble(message: Message, myDeviceId: String, onLongPress: () -> Unit 
                     }
                 }
 
-                // Message payload
-                Text(
-                    text = message.payload,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        color = textColor,
-                        lineHeight = 20.sp
+                // Message payload (Text or Walkie-Talkie Voice Player)
+                if (message.payload.startsWith("🎤 VOICE|")) {
+                    VoiceMessagePlayer(
+                        message = message,
+                        textColor = textColor
                     )
-                )
+                } else {
+                    Text(
+                        text = message.payload,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = textColor,
+                            lineHeight = 20.sp
+                        )
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(6.dp))
 
@@ -1108,4 +1319,280 @@ fun MessageBubble(message: Message, myDeviceId: String, onLongPress: () -> Unit 
             }
         }
     }
+}
+
+/**
+ * Walkie-Talkie Push-to-Talk Voice Message Player Bubble
+ */
+@Composable
+fun VoiceMessagePlayer(
+    message: Message,
+    textColor: Color
+) {
+    val context = LocalContext.current
+    val parts = remember(message.payload) { message.payload.split("|") }
+    val durationSec = remember(parts) { parts.getOrNull(1)?.toIntOrNull() ?: 3 }
+    val base64Audio = remember(parts) { if (parts.size > 2) parts[2] else "" }
+
+    var isPlaying by remember { mutableStateOf(false) }
+
+    LaunchedEffect(AudioHelper.currentlyPlayingId) {
+        isPlaying = AudioHelper.currentlyPlayingId == message.messageId
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (AudioHelper.currentlyPlayingId == message.messageId) {
+                AudioHelper.stopPlayback()
+            }
+        }
+    }
+
+    Surface(
+        color = Color.Black.copy(alpha = 0.18f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            IconButton(
+                onClick = {
+                    if (isPlaying) {
+                        AudioHelper.stopPlayback()
+                        isPlaying = false
+                    } else {
+                        val started = AudioHelper.playAudio(context, base64Audio, message.messageId) {
+                            isPlaying = false
+                        }
+                        isPlaying = started
+                    }
+                },
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+            ) {
+                Text(
+                    text = if (isPlaying) "⏸" else "▶",
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "📻 WALKIE-TALKIE AUDIO",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Black,
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 0.5.sp
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    if (isPlaying) {
+                        Text(
+                            text = "● PLAYING",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 8.sp,
+                                color = Color(0xFF00E676)
+                            )
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = AudioHelper.formatDuration(durationSec),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        color = textColor.copy(alpha = 0.85f),
+                        fontSize = 11.sp
+                    )
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Automated MANET Benchmark Runner Dialog
+ * Sends N Sequenced Messages, Measures Latency (RTT), Hops, PDR, and Exports CSV.
+ */
+@Composable
+fun BenchmarkDialog(
+    viewModel: RelayViewModel,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val benchManager = viewModel.benchmarkManager
+    val isRunning by (benchManager?.isRunning ?: MutableStateFlow(false)).collectAsState()
+    val liveProgress by (benchManager?.liveProgress ?: MutableStateFlow("")).collectAsState()
+    val summary by (benchManager?.lastSummary ?: MutableStateFlow<BenchmarkSummary?>(null)).collectAsState()
+
+    var packetCountText by remember { mutableStateOf("30") }
+    var intervalMsText by remember { mutableStateOf("500") }
+
+    AlertDialog(
+        onDismissRequest = { if (!isRunning) onDismiss() },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "📊", fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "MANET Telemetry & Benchmark",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Transmits N sequenced test packets through mesh, measures round-trip latency (RTT), hop counts, and Packet Delivery Ratio (PDR). Automatically exports to CSV.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 16.sp
+                    )
+                )
+
+                if (!isRunning && summary == null) {
+                    OutlinedTextField(
+                        value = packetCountText,
+                        onValueChange = { packetCountText = it },
+                        label = { Text("Number of Packets (e.g. 30, 50, 100)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = intervalMsText,
+                        onValueChange = { intervalMsText = it },
+                        label = { Text("Interval per packet (ms, e.g. 500)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    Text(
+                        text = "Destination: ALL MESH NODES (Broadcast Flood)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+
+                if (isRunning) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = liveProgress,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                summary?.let { res ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, Color(0xFF00E676)),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "✅ BENCHMARK RUN COMPLETE",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Black,
+                                    color = Color(0xFF00E676),
+                                    letterSpacing = 1.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text("• Session: ${res.sessionId}", fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            Text("• Total Packets Sent: ${res.totalSent}", fontSize = 11.sp)
+                            Text("• Packets Echoed: ${res.totalReceived}", fontSize = 11.sp)
+                            Text("• Delivery Ratio (PDR): ${"%.1f".format(res.packetDeliveryRatio)}%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Text("• Latency: Min ${res.minLatencyMs}ms | Avg ${"%.1f".format(res.avgLatencyMs)}ms | Max ${res.maxLatencyMs}ms", fontSize = 11.sp)
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Button(
+                                onClick = {
+                                    val file = File(res.csvFilePath)
+                                    if (file.exists()) {
+                                        val uri = FileProvider.getUriForFile(context, "com.example.relaynet.fileprovider", file)
+                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/csv"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(sendIntent, "Share Benchmark CSV"))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text("📤 Share CSV (Excel / Drive / WhatsApp)")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (isRunning) {
+                Button(
+                    onClick = { viewModel.cancelBenchmark() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Stop Run")
+                }
+            } else if (summary != null) {
+                Button(onClick = onDismiss) {
+                    Text("Close")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        val count = packetCountText.toIntOrNull() ?: 30
+                        val interval = intervalMsText.toLongOrNull() ?: 500L
+                        viewModel.startBenchmark(count, interval, "")
+                    }
+                ) {
+                    Text("🚀 Start Run")
+                }
+            }
+        },
+        dismissButton = {
+            if (!isRunning) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
 }

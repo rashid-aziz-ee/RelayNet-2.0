@@ -81,6 +81,17 @@ class MainActivity : ComponentActivity() {
                 viewModel.refreshLambda = {
                     meshManager.fullMeshRefresh()
                 }
+
+                // NEW: Initialize and link BenchmarkManager for automated latency & PDR testing
+                val benchManager = com.example.relaynet.util.BenchmarkManager(
+                    context = this@MainActivity,
+                    myDeviceId = myDeviceId,
+                    sendRawPacketLambda = { packet -> meshManager.sendRawPacket(packet) }
+                )
+                viewModel.benchmarkManager = benchManager
+                meshManager.onRawPacketReceivedCallback = { rawData, fromEndpoint ->
+                    benchManager.handleIncomingBenchmarkPacket(rawData, fromEndpoint)
+                }
             }
         }
 
@@ -181,7 +192,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun getAllRequiredPermissions(): Array<String> {
-        return getEssentialPermissions() + arrayOf(Manifest.permission.READ_CONTACTS)
+        return getEssentialPermissions() + arrayOf(
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.RECORD_AUDIO
+        )
     }
 
     private fun requestRequiredPermissions() {

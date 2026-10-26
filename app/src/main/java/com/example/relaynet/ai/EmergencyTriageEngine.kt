@@ -75,6 +75,16 @@ object EmergencyTriageEngine {
     )
 
     fun classifyEmergency(text: String): TriageResult {
+        // Bypass Walkie-Talkie Voice payload (base64 audio) to avoid false keyword triggering
+        if (text.startsWith("🎤 VOICE|")) {
+            return TriageResult(
+                category = "CHAT",
+                urgencyLevel = "NORMAL",
+                badgeIcon = "🎙️",
+                summary = "Normal Mesh Message"
+            )
+        }
+
         val lower = text.lowercase()
         val tokens = lower.split(Regex("[\\s,;:.!?\\-_()\\[\\]{}]+")).filter { it.isNotEmpty() }
 

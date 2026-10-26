@@ -35,6 +35,11 @@ class MeshNetworkManager(
     val remotePeerNextHopEndpoint = mutableMapOf<String, String>()
 
     var onPeersMapChangedCallback: ((Map<String, String>) -> Unit)? = null
+    var onRawPacketReceivedCallback: ((rawData: String, fromEndpoint: String) -> Boolean)? = null
+
+    fun sendRawPacket(dataStr: String) {
+        sendToAllPeers(dataStr, null)
+    }
 
     fun getActivePeersMap(): Map<String, String> {
         val result = mutableMapOf<String, String>()
@@ -258,6 +263,12 @@ class MeshNetworkManager(
                 if (parts.isEmpty()) return@launch
 
                 val type = parts[0]
+
+                // NEW: Intercept automated benchmark telemetry packets (TEST_PING / TEST_ECHO)
+                if (type == "TEST_PING" || type == "TEST_ECHO") {
+                    val handled = onRawPacketReceivedCallback?.invoke(rawData, cameFromEndpoint) ?: false
+                    if (handled) return@launch
+                }
 
                 // 1. Peer Key Exchange Handshake
                 if (type == "KEY_EXCHANGE") {
@@ -585,7 +596,9 @@ class MeshNetworkManager(
                     connectionsClient.sendPayload(peerEndpoint, payload)
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    deadPeers.add(peerEndpoint)
+                    if (e !is IllegalArgumentException) {
+                        deadPeers.add(peerEndpoint)
+                    }
                 }
             }
         }
@@ -610,14 +623,16 @@ class MeshNetworkManager(
             connectionsClient.sendPayload(endpoint, payload)
         } catch (e: Exception) {
             e.printStackTrace()
-            connectedPeers.remove(endpoint)
-            val devId = endpointToDeviceId.remove(endpoint)
-            if (devId != null) {
-                deviceIdToEndpoint.remove(devId)
-                peerDisplayNames.remove(devId)
+            if (e !is IllegalArgumentException) {
+                connectedPeers.remove(endpoint)
+                val devId = endpointToDeviceId.remove(endpoint)
+                if (devId != null) {
+                    deviceIdToEndpoint.remove(devId)
+                    peerDisplayNames.remove(devId)
+                }
+                peerDisplayNames.remove(endpoint)
+                notifyPeersChanged()
             }
-            peerDisplayNames.remove(endpoint)
-            notifyPeersChanged()
         }
     }
 
